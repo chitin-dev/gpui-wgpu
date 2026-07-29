@@ -152,22 +152,6 @@ objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSImage"] }
 objc2-foundation = { version = "0.2", features = ["NSData"] }
 
 [dev-dependencies]
-backtrace = "0.3"
-helio = { git = "https://github.com/Far-Beyond-Pulsar/Helio", rev = "04a38328c6d1329272072ade89d07098737df6b8" }
-helio-default-graphs = { git = "https://github.com/Far-Beyond-Pulsar/Helio", rev = "04a38328c6d1329272072ade89d07098737df6b8" }
-glam = "0.33"
-env_logger = "0.11"
-collections = { package = "gpui_collections", version = "0.2.2", features = [
-    "test-support",
-] }
-http_client = { package = "gpui_http_client", version = "0.2.2", features = [
-    "test-support",
-] }
-lyon = { version = "1.0", features = ["extra"] }
-pretty_assertions = { version = "1.3.0", features = ["unstable"] }
-rand = "0.10"
-unicode-segmentation = "1.10"
-util = { package = "gpui_util", version = "0.2.2", features = ["test-support"] }
 
 [[example]]
 name = "karaoke_text"

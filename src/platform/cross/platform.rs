@@ -50,6 +50,16 @@ use crate::time_ext::Instant;
 use std::{fs::{self, OpenOptions}, net::{TcpListener, TcpStream}, thread};
 use winit::event_loop::ActiveEventLoop;
 
+#[cfg(target_family = "wasm")]
+fn platform_debug_log(message: &str) {
+    web_sys::console::log_1(&message.into());
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn platform_debug_log(message: &str) {
+    log::debug!("{message}");
+}
+
 thread_local! {
     static ACTIVE_CONTEXT: Cell<Option<(*const ActiveEventLoop, *mut AppState)>> = Cell::new(None);
 }
@@ -318,7 +328,7 @@ impl Platform for CrossPlatform {
     }
 
     fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>) {
-        web_sys::console::log_1(&"WGPUI: CrossPlatform::run entered".into());
+        platform_debug_log("WGPUI: CrossPlatform::run entered");
         let mut event_loop = self.event_loop.take().expect("App is already running");
 
         #[cfg(target_family = "wasm")]
@@ -943,17 +953,17 @@ impl winit::application::ApplicationHandler<CrossEvent> for AppState {
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, _cause: winit::event::StartCause) {}
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: CrossEvent) {
-        web_sys::console::log_1(&"WGPUI: user_event".into());
+        platform_debug_log("WGPUI: user_event");
         self.set_active_context(event_loop);
 
         match event {
             CrossEvent::WakeUp => {
-                web_sys::console::log_1(&"WGPUI: WakeUp received".into());
+                platform_debug_log("WGPUI: WakeUp received");
                 // After async WGPU init completes, run the deferred callback
                 // within a valid ActiveEventLoop context.
                 #[cfg(target_family = "wasm")]
                 if self.wgpu_context.as_ref().get().is_some() {
-                    web_sys::console::log_1(&"WGPUI: WGPU ready, calling on_finish_launching".into());
+                    platform_debug_log("WGPUI: WGPU ready, calling on_finish_launching");
                     if let Some(cb) = self.on_finish_launching.take() {
                         cb();
                     } else if let Some(mut callback) = self.callbacks.on_reopen.take() {
@@ -1089,7 +1099,7 @@ impl winit::application::ApplicationHandler<CrossEvent> for AppState {
     fn memory_warning(&mut self, _event_loop: &ActiveEventLoop) {}
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        web_sys::console::log_1(&"WGPUI: resumed fired".into());
+        platform_debug_log("WGPUI: resumed fired");
         self.set_active_context(event_loop);
 
         #[cfg(target_family = "wasm")]
