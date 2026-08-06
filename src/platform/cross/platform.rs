@@ -86,6 +86,8 @@ pub(crate) struct CrossPlatform {
     menus: RefCell<Option<Vec<crate::OwnedMenu>>>,
     dock_menu: RefCell<Vec<crate::OwnedMenuItem>>,
     #[cfg(not(target_family = "wasm"))]
+    clipboard: RefCell<Option<Clipboard>>,
+    #[cfg(not(target_family = "wasm"))]
     single_instance: RefCell<Option<SingleInstanceRuntime>>,
 }
 
@@ -174,6 +176,8 @@ impl CrossPlatform {
             callbacks: Rc::new(PlatformCallbacks::default()),
             menus: RefCell::new(None),
             dock_menu: RefCell::new(Vec::new()),
+            #[cfg(not(target_family = "wasm"))]
+            clipboard: RefCell::new(None),
             #[cfg(not(target_family = "wasm"))]
             single_instance: RefCell::new(None),
         })
@@ -860,31 +864,34 @@ impl Platform for CrossPlatform {
     fn write_to_clipboard(&self, item: crate::ClipboardItem) {
         #[cfg(not(target_family = "wasm"))]
         {
-        let Some(text) = item.text() else {
-            log::warn!("write_to_clipboard currently supports text entries only on this platform");
-            return;
-        };
+            let Some(text) = item.text() else {
+                log::warn!(
+                    "write_to_clipboard currently supports text entries only on this platform"
+                );
+                return;
+            };
 
-        match Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text)) {
-            Ok(()) => {}
-            Err(error) => log::warn!("failed to write to clipboard: {error}"),
-        }
+            if let Err(error) = self.with_clipboard(|clipboard| clipboard.set_text(text)) {
+                log::warn!("failed to write to clipboard: {error}");
+            }
         }
     }
 
     fn read_from_clipboard(&self) -> Option<crate::ClipboardItem> {
         #[cfg(not(target_family = "wasm"))]
         {
-        match Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
-            Ok(text) => Some(crate::ClipboardItem::new_string(text)),
-            Err(error) => {
-                log::warn!("failed to read from clipboard: {error}");
-                None
+            match self.with_clipboard(|clipboard| clipboard.get_text()) {
+                Ok(text) => Some(crate::ClipboardItem::new_string(text)),
+                Err(error) => {
+                    log::warn!("failed to read from clipboard: {error}");
+                    None
+                }
             }
         }
-        }
         #[cfg(target_family = "wasm")]
-        { None }
+        {
+            None
+        }
     }
 
     fn write_credentials(
@@ -923,6 +930,33 @@ impl Platform for CrossPlatform {
 
     fn on_keyboard_layout_change(&self, _callback: Box<dyn FnMut()>) {
         // TODO(mdeand): Is this possible to implement in a cross-platform way?
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl CrossPlatform {
+    /// Runs an operation against the platform's long-lived clipboard.
+    ///
+    /// Parameters:
+    /// - `operation`: A single read or write operation to perform.
+    ///
+    /// Returns:
+    /// - The operation result, including failures while opening the clipboard.
+    fn with_clipboard<T>(
+        &self,
+        operation: impl FnOnce(&mut Clipboard) -> std::result::Result<T, arboard::Error>,
+    ) -> Result<T> {
+        let mut clipboard = self.clipboard.borrow_mut();
+        if clipboard.is_none() {
+            *clipboard = Some(Clipboard::new()?);
+        }
+
+        match clipboard.as_mut() {
+            Some(clipboard) => operation(clipboard).map_err(Into::into),
+            None => Err(anyhow::anyhow!(
+                "clipboard was unavailable after initialization"
+            )),
+        }
     }
 }
 
