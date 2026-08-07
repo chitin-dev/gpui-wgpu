@@ -2358,7 +2358,10 @@ impl Window {
             .rev()
             .find_map(|h| h.take())
         {
+            self.platform_window.set_ime_allowed(true);
             self.platform_window.set_input_handler(input_handler);
+        } else {
+            self.platform_window.set_ime_allowed(false);
         }
 
         self.layout_engine.as_mut().unwrap().clear();

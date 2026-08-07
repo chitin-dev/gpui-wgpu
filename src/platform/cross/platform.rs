@@ -36,6 +36,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::HashSet,
     io::{Read, Write},
+    ops::Range,
     path::PathBuf,
     rc::Rc,
     sync::{
@@ -1451,6 +1452,28 @@ impl winit::application::ApplicationHandler<CrossEvent> for AppState {
                 }
             }
 
+            winit::event::WindowEvent::Ime(ime) => {
+                let Some(mut input_handler) = window.0.state.input_handler.borrow_mut().take() else {
+                    return;
+                };
+
+                match ime {
+                    winit::event::Ime::Enabled => {}
+                    winit::event::Ime::Preedit(text, selection) => {
+                        let selection = selection.map(|(start, end)| {
+                            utf8_range_to_utf16(&text, start..end)
+                        });
+                        input_handler.replace_and_mark_text_in_range(None, &text, selection);
+                    }
+                    winit::event::Ime::Commit(text) => {
+                        input_handler.replace_text_in_range(None, &text);
+                    }
+                    winit::event::Ime::Disabled => input_handler.unmark_text(),
+                }
+
+                window.0.state.input_handler.borrow_mut().replace(input_handler);
+            }
+
             winit::event::WindowEvent::ModifiersChanged(new_modifiers) => {
                 let modifiers = winit_modifiers_to_gpui(new_modifiers.state());
                 self.current_modifiers = modifiers;
@@ -1924,6 +1947,40 @@ fn find_action_at_index<'a>(
     }
 
     None
+}
+
+/// Converts a winit UTF-8 byte range into the UTF-16 range required by GPUI input handlers.
+///
+/// # Parameters
+///
+/// `text` supplies the current winit preedit string.
+///
+/// `range` supplies a UTF-8 byte range from the winit IME event.
+///
+/// # Returns
+///
+/// The corresponding UTF-16 code-unit range.
+fn utf8_range_to_utf16(text: &str, range: Range<usize>) -> Range<usize> {
+    utf8_offset_to_utf16(text, range.start)..utf8_offset_to_utf16(text, range.end)
+}
+
+/// Converts a winit UTF-8 byte offset into a UTF-16 code-unit offset.
+///
+/// # Parameters
+///
+/// `text` supplies the current winit preedit string.
+///
+/// `offset` supplies a UTF-8 byte boundary in `text`.
+///
+/// # Returns
+///
+/// The corresponding UTF-16 code-unit offset, clamped to the text end.
+fn utf8_offset_to_utf16(text: &str, offset: usize) -> usize {
+    text
+        .char_indices()
+        .take_while(|(index, _)| *index < offset)
+        .map(|(_, character)| character.len_utf16())
+        .sum()
 }
 
 fn winit_key_to_keystroke(

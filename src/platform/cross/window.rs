@@ -265,6 +265,10 @@ impl PlatformWindow for CrossWindow {
         self.0.state.input_handler.borrow_mut().take()
     }
 
+    fn set_ime_allowed(&self, allowed: bool) {
+        self.window().set_ime_allowed(allowed);
+    }
+
     fn prompt(
         &self,
         _level: crate::PromptLevel,
@@ -490,7 +494,12 @@ impl PlatformWindow for CrossWindow {
         None
     }
 
-    fn update_ime_position(&self, _bounds: crate::Bounds<crate::Pixels>) {}
+    fn update_ime_position(&self, bounds: crate::Bounds<crate::Pixels>) {
+        self.window().set_ime_cursor_area(
+            winit::dpi::LogicalPosition::new(bounds.left().0 as f64, bounds.top().0 as f64),
+            winit::dpi::LogicalSize::new(bounds.size.width.0 as f64, bounds.size.height.0 as f64),
+        );
+    }
 
     fn start_window_move(&self) {
         let _ = self.window().drag_window();
