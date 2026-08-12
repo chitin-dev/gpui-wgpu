@@ -43,6 +43,33 @@ struct TripleBuffer {
     format: wgpu::TextureFormat,
 }
 
+/// The active texture set and a replacement set waiting for its first frame.
+///
+/// A resize leaves `active` available to the compositor while the producer
+/// renders into `pending`. This prevents an uninitialized replacement texture
+/// from being displayed between the resize and its first completed frame.
+struct SurfaceBuffers {
+    active: TripleBuffer,
+    pending: Option<TripleBuffer>,
+}
+
+impl SurfaceBuffers {
+    fn render_target(&self) -> &TripleBuffer {
+        self.pending.as_ref().unwrap_or(&self.active)
+    }
+
+    fn promote_pending_if_ready(&mut self) {
+        let Some(pending) = self.pending.as_ref() else {
+            return;
+        };
+        let current = pending.frame_generation.load(Ordering::Acquire);
+        let last = pending.last_composited_generation.load(Ordering::Acquire);
+        if SurfaceRegistry::should_composite_swap(current, last) {
+            self.active = self.pending.take().unwrap();
+        }
+    }
+}
+
 impl TripleBuffer {
     #[inline]
     fn pack_state(rendering: u8, ready: u8, display: u8) -> u8 {
@@ -63,7 +90,7 @@ impl TripleBuffer {
 /// Thread-safe registry of all active WGPU surfaces.
 /// Maps `SurfaceId` to triple-buffered texture sets.
 pub struct SurfaceRegistry {
-    surfaces: Mutex<HashMap<SurfaceId, TripleBuffer>>,
+    surfaces: Mutex<HashMap<SurfaceId, SurfaceBuffers>>,
     next_id: AtomicU64,
 }
 
@@ -84,8 +111,11 @@ impl SurfaceRegistry {
         format: wgpu::TextureFormat,
     ) -> SurfaceId {
         let id = SurfaceId(self.next_id.fetch_add(1, Ordering::Relaxed));
-        let tb = Self::create_triple_buffer(device, width, height, format);
-        self.surfaces.lock().unwrap().insert(id, tb);
+        let active = Self::create_triple_buffer(device, width, height, format);
+        self.surfaces
+            .lock()
+            .unwrap()
+            .insert(id, SurfaceBuffers { active, pending: None });
         id
     }
 
@@ -99,7 +129,8 @@ impl SurfaceRegistry {
     ///
     /// Returns immediately without blocking.
     pub fn swap_rendering_ready(&self, id: SurfaceId, submission_idx: wgpu::SubmissionIndex) {
-        if let Some(tb) = self.surfaces.lock().unwrap().get(&id) {
+        if let Some(surface) = self.surfaces.lock().unwrap().get(&id) {
+            let tb = surface.render_target();
             let current = tb.state.load(Ordering::Acquire);
             let (rendering, ready, display) = TripleBuffer::unpack_state(current);
 
@@ -139,7 +170,8 @@ impl SurfaceRegistry {
     /// DEPRECATED: Use swap_rendering_ready() with SubmissionIndex for proper GPU sync.
     /// This method exists for backward compatibility only.
     pub fn swap_rendering_ready_no_sync(&self, id: SurfaceId) {
-        if let Some(tb) = self.surfaces.lock().unwrap().get(&id) {
+        if let Some(surface) = self.surfaces.lock().unwrap().get(&id) {
+            let tb = surface.render_target();
             let mut current = tb.state.load(Ordering::Acquire);
             loop {
                 let (rendering, ready, display) = TripleBuffer::unpack_state(current);
@@ -167,7 +199,9 @@ impl SurfaceRegistry {
     /// Returns `true` if a swap occurred, `false` if GPU work is incomplete (compositor
     /// should reuse the current display buffer).
     pub fn swap_ready_display(&self, _device: &wgpu::Device, id: SurfaceId) -> bool {
-        if let Some(tb) = self.surfaces.lock().unwrap().get(&id) {
+        if let Some(surface) = self.surfaces.lock().unwrap().get_mut(&id) {
+            surface.promote_pending_if_ready();
+            let tb = &surface.active;
             // Atomic swap: ready ↔ display
             // NOTE: We do NOT call device.poll() here because:
             // 1. The render thread owns the device and is actively using it
@@ -193,7 +227,8 @@ impl SurfaceRegistry {
     /// Get the rendering buffer's `TextureView` (what external code renders into).
     pub fn back_view(&self, id: SurfaceId) -> Option<wgpu::TextureView> {
         let surfaces = self.surfaces.lock().unwrap();
-        surfaces.get(&id).map(|tb| {
+        surfaces.get(&id).map(|surface| {
+            let tb = surface.render_target();
             let (rendering, _, _) = TripleBuffer::unpack_state(tb.state.load(Ordering::Acquire));
             tb.views[rendering as usize].clone()
         })
@@ -202,9 +237,20 @@ impl SurfaceRegistry {
     /// Get the display buffer's `TextureView` (what the compositor reads from).
     pub fn front_view(&self, id: SurfaceId) -> Option<wgpu::TextureView> {
         let surfaces = self.surfaces.lock().unwrap();
-        surfaces.get(&id).map(|tb| {
+        surfaces.get(&id).map(|surface| {
+            let tb = &surface.active;
             let (_, _, display) = TripleBuffer::unpack_state(tb.state.load(Ordering::Acquire));
             tb.views[display as usize].clone()
+        })
+    }
+
+    /// Get the display buffer view and dimensions from the same texture set.
+    pub fn front_view_with_size(&self, id: SurfaceId) -> Option<(wgpu::TextureView, (u32, u32))> {
+        let surfaces = self.surfaces.lock().unwrap();
+        surfaces.get(&id).map(|surface| {
+            let tb = &surface.active;
+            let (_, _, display) = TripleBuffer::unpack_state(tb.state.load(Ordering::Acquire));
+            (tb.views[display as usize].clone(), (tb.width, tb.height))
         })
     }
 
@@ -216,43 +262,27 @@ impl SurfaceRegistry {
         id: SurfaceId,
     ) -> Option<(wgpu::TextureView, (u32, u32))> {
         let surfaces = self.surfaces.lock().unwrap();
-        surfaces.get(&id).map(|tb| {
+        surfaces.get(&id).map(|surface| {
+            let tb = surface.render_target();
             let (rendering, _, _) = TripleBuffer::unpack_state(tb.state.load(Ordering::Acquire));
             (tb.views[rendering as usize].clone(), (tb.width, tb.height))
         })
     }
 
-    /// Resize all three buffers, creating new textures with GPU synchronization.
-    ///
-    /// SAFETY: Waits for all pending GPU work to complete before destroying textures.
-    /// This prevents use-after-free and ensures all GPU commands finish before
-    /// texture resources are released.
-    ///
-    /// Also skips resize if compositor is actively using the buffers (redraw_pending).
-    /// Returns `true` if the resize completed, `false` if it was skipped due to active composition.
+    /// Prepare replacement buffers without discarding the displayed frame.
     pub fn resize(&self, device: &wgpu::Device, id: SurfaceId, width: u32, height: u32) -> bool {
         let mut surfaces = self.surfaces.lock().unwrap();
-        if let Some(tb) = surfaces.get_mut(&id) {
-            if tb.width == width && tb.height == height {
+        if let Some(surface) = surfaces.get_mut(&id) {
+            let target = surface.render_target();
+            if target.width == width && target.height == height {
                 return true;
             }
-
-            // CRITICAL: Don't resize while compositor is rendering this surface!
-            // If redraw_pending is true, compositor is using the buffers.
-            // Skip resize - the element will retry on next frame.
-            if tb.redraw_pending.load(Ordering::Relaxed) {
-                return false;
-            }
-
-            // NOTE: We do NOT call device.poll() here because:
-            // 1. The render thread owns the device and may be actively using it
-            // 2. Calling poll from compositor thread causes device corruption
-            // 3. WGPU internally ref-counts textures, so old views remain valid until dropped
-            // 4. The skip-if-redraw-pending check above prevents resize during active composition
-
-            // Now safe to recreate textures
-            let new_tb = Self::create_triple_buffer(device, width, height, tb.format);
-            *tb = new_tb;
+            surface.pending = Some(Self::create_triple_buffer(
+                device,
+                width,
+                height,
+                surface.active.format,
+            ));
             return true;
         }
         false
@@ -261,13 +291,16 @@ impl SurfaceRegistry {
     /// Get the current size of a surface.
     pub fn size(&self, id: SurfaceId) -> Option<(u32, u32)> {
         let surfaces = self.surfaces.lock().unwrap();
-        surfaces.get(&id).map(|tb| (tb.width, tb.height))
+        surfaces.get(&id).map(|surface| {
+            let tb = surface.render_target();
+            (tb.width, tb.height)
+        })
     }
 
     /// Get the texture format for a surface.
     pub fn format(&self, id: SurfaceId) -> Option<wgpu::TextureFormat> {
         let surfaces = self.surfaces.lock().unwrap();
-        surfaces.get(&id).map(|tb| tb.format)
+        surfaces.get(&id).map(|surface| surface.active.format)
     }
 
     /// One surface's currently-displayed triple-buffer texture, snapshotted
@@ -283,7 +316,8 @@ impl SurfaceRegistry {
     #[cfg(feature = "flamegraph")]
     pub(crate) fn front_texture_snapshot(&self, id: SurfaceId) -> Option<SurfaceTextureSnapshot> {
         let surfaces = self.surfaces.lock().ok()?;
-        surfaces.get(&id).map(|tb| {
+        surfaces.get(&id).map(|surface| {
+            let tb = &surface.active;
             let (_, _, display) = TripleBuffer::unpack_state(tb.state.load(Ordering::Acquire));
             SurfaceTextureSnapshot {
                 texture: tb.textures[display as usize].clone(),
@@ -302,7 +336,8 @@ impl SurfaceRegistry {
     /// Set the redraw pending flag, returning the previous value.
     /// Used by present() to coalesce multiple redraw requests.
     pub fn set_redraw_pending(&self, id: SurfaceId) -> bool {
-        if let Some(tb) = self.surfaces.lock().unwrap().get(&id) {
+        if let Some(surface) = self.surfaces.lock().unwrap().get(&id) {
+            let tb = surface.render_target();
             tb.redraw_pending.swap(true, Ordering::Relaxed)
         } else {
             false
@@ -312,7 +347,8 @@ impl SurfaceRegistry {
     /// Clear the redraw pending flag.
     /// Called by the compositor after consuming a frame.
     pub fn clear_redraw_pending(&self, id: SurfaceId) {
-        if let Some(tb) = self.surfaces.lock().unwrap().get(&id) {
+        if let Some(surface) = self.surfaces.lock().unwrap().get(&id) {
+            let tb = surface.render_target();
             tb.redraw_pending.store(false, Ordering::Relaxed);
         }
     }
@@ -323,7 +359,7 @@ impl SurfaceRegistry {
         let surfaces = self.surfaces.lock().unwrap();
         surfaces
             .iter()
-            .filter(|(_, tb)| tb.redraw_pending.load(Ordering::Relaxed))
+            .filter(|(_, surface)| surface.render_target().redraw_pending.load(Ordering::Relaxed))
             .map(|(id, _)| *id)
             .collect()
     }
@@ -340,7 +376,11 @@ impl SurfaceRegistry {
         };
         surfaces
             .values()
-            .flat_map(|triple_buffer| triple_buffer.textures.iter())
+            .flat_map(|surface| {
+                surface.active.textures.iter().chain(
+                    surface.pending.iter().flat_map(|pending| pending.textures.iter()),
+                )
+            })
             .map(super::render_context::texture_memory_bytes)
             .sum()
     }
@@ -362,7 +402,9 @@ impl SurfaceRegistry {
     /// buffer swap, and the generation store are atomic with respect to the
     /// producer's `swap_rendering_ready*`.
     pub fn swap_ready_display_if_new(&self, id: SurfaceId) -> bool {
-        if let Some(tb) = self.surfaces.lock().unwrap().get(&id) {
+        if let Some(surface) = self.surfaces.lock().unwrap().get_mut(&id) {
+            surface.promote_pending_if_ready();
+            let tb = &surface.active;
             let current_gen = tb.frame_generation.load(Ordering::Acquire);
             let last = tb.last_composited_generation.load(Ordering::Acquire);
             if !Self::should_composite_swap(current_gen, last) {
@@ -397,7 +439,7 @@ impl SurfaceRegistry {
             .lock()
             .unwrap()
             .get(&id)
-            .map(|tb| tb.frame_generation.load(Ordering::Acquire))
+            .map(|surface| surface.render_target().frame_generation.load(Ordering::Acquire))
     }
 
     /// Pure decision function used by [`swap_ready_display_if_new`](Self::swap_ready_display_if_new):

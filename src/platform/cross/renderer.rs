@@ -306,6 +306,30 @@ struct SurfaceParams {
     content_mask: Bounds,
 }
 
+fn fit_surface_bounds(bounds: Bounds, texture_size: (u32, u32)) -> Bounds {
+    let (texture_width, texture_height) = texture_size;
+    let width = bounds.size[0];
+    let height = bounds.size[1];
+    if texture_width == 0 || texture_height == 0 || width <= 0.0 || height <= 0.0 {
+        return bounds;
+    }
+
+    let texture_aspect = texture_width as f32 / texture_height as f32;
+    let bounds_aspect = width / height;
+    let (fitted_width, fitted_height) = if texture_aspect > bounds_aspect {
+        (width, width / texture_aspect)
+    } else {
+        (height * texture_aspect, height)
+    };
+    Bounds {
+        origin: [
+            bounds.origin[0] + (width - fitted_width) / 2.0,
+            bounds.origin[1] + (height - fitted_height) / 2.0,
+        ],
+        size: [fitted_width, fitted_height],
+    }
+}
+
 impl Quad {
     const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute; 22] = &{
         let bounds_vertex_attributes = map_attributes(
@@ -2656,11 +2680,13 @@ impl WgpuRenderer {
                                     .surface_registry
                                     .swap_ready_display_if_new(*surface_id);
 
-                                if let Some(view) =
-                                    self.context.surface_registry.front_view(*surface_id)
+                                if let Some((view, texture_size)) = self
+                                    .context
+                                    .surface_registry
+                                    .front_view_with_size(*surface_id)
                                 {
                                     let params = SurfaceParams {
-                                        bounds: Bounds {
+                                        bounds: fit_surface_bounds(Bounds {
                                             origin: [
                                                 surface.bounds.origin.x.0,
                                                 surface.bounds.origin.y.0,
@@ -2669,7 +2695,7 @@ impl WgpuRenderer {
                                                 surface.bounds.size.width.0,
                                                 surface.bounds.size.height.0,
                                             ],
-                                        },
+                                        }, texture_size),
                                         content_mask: Bounds {
                                             origin: [
                                                 surface.content_mask.bounds.origin.x.0,
@@ -3042,15 +3068,19 @@ impl WgpuRenderer {
             let mut surface_param_buffers = Vec::new();
 
             for (surface_id, screen_bounds, content_mask) in &visible_surfaces {
-                let Some(view) = self.context.surface_registry.front_view(*surface_id) else {
+                let Some((view, texture_size)) = self
+                    .context
+                    .surface_registry
+                    .front_view_with_size(*surface_id)
+                else {
                     return false;
                 };
 
                 let params = SurfaceParams {
-                    bounds: Bounds {
+                    bounds: fit_surface_bounds(Bounds {
                         origin: [screen_bounds.origin.x.0, screen_bounds.origin.y.0],
                         size: [screen_bounds.size.width.0, screen_bounds.size.height.0],
-                    },
+                    }, texture_size),
                     content_mask: Bounds {
                         origin: [content_mask.origin.x.0, content_mask.origin.y.0],
                         size: [content_mask.size.width.0, content_mask.size.height.0],
