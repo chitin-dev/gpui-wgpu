@@ -163,6 +163,9 @@ impl WgpuContext {
                     max_binding_array_elements_per_shader_stage: 512,
                     ..adapter.limits()
                 },
+                // Interactive desktop surfaces should avoid reserving large
+                // device-memory blocks that remain resident after a view closes.
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
                 ..Default::default()
             }))?;
 
@@ -324,6 +327,8 @@ impl WgpuContext {
                 max_binding_array_elements_per_shader_stage: 512,
                 ..adapter.limits()
             },
+            // Keep the allocator's retained blocks bounded for short-lived views.
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
             ..Default::default()
         }).await?;
 
