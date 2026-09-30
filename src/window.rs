@@ -104,6 +104,24 @@ struct WindowInvalidatorInner {
     pub draw_phase: DrawPhase,
     pub dirty_views: FxHashSet<EntityId>,
     pub update_count: usize,
+    pub frame_dirty: FrameDirtyAccumulator,
+}
+
+/// Per-frame invalidation bookkeeping, drained at draw time and reported to the
+/// frame profiler.
+///
+/// It answers two questions about the frame the window is currently
+/// accumulating: when did it first become dirty, and how many invalidations
+/// have been folded into it since. Both are cheap enough to collect on every
+/// frame — a timestamp and a counter — and are kept unconditionally, so that
+/// the answer is available the moment an observer asks for it rather than only
+/// from the frame after it asked. [`crate::profiler::trace_enabled`] controls
+/// whether the resulting per-frame record is *retained*, not whether it is
+/// measured.
+#[derive(Default)]
+struct FrameDirtyAccumulator {
+    dirty_at: Option<Instant>,
+    invalidations: u64,
 }
 
 #[derive(Clone)]
@@ -119,6 +137,7 @@ impl WindowInvalidator {
                 draw_phase: DrawPhase::None,
                 dirty_views: FxHashSet::default(),
                 update_count: 0,
+                frame_dirty: FrameDirtyAccumulator::default(),
             })),
         }
     }
@@ -130,6 +149,7 @@ impl WindowInvalidator {
         #[cfg(feature = "flamegraph")]
         crate::record_entity_invalidated();
         if inner.draw_phase == DrawPhase::None {
+            Self::record_frame_dirty(&mut inner);
             inner.dirty = true;
             cx.push_effect(Effect::Notify { emitter: entity });
             true
@@ -147,7 +167,30 @@ impl WindowInvalidator {
         inner.dirty = dirty;
         if dirty {
             inner.update_count += 1;
+            Self::record_frame_dirty(&mut inner);
         }
+    }
+
+    /// Opens the current frame's dirty window if it has none, and counts this
+    /// invalidation against it.
+    ///
+    /// Only the first invalidation of a frame stamps a time; later ones raise
+    /// the count. That is the whole point of the pair — the frame's latency is
+    /// measured from when the *first* piece of work asked to be drawn, not from
+    /// when the last did, and the count is how many pieces were waiting behind
+    /// the one frame that could carry them.
+    fn record_frame_dirty(inner: &mut WindowInvalidatorInner) {
+        inner.frame_dirty.dirty_at.get_or_insert_with(Instant::now);
+        inner.frame_dirty.invalidations += 1;
+    }
+
+    /// Takes the accumulated per-frame dirty bookkeeping, starting a fresh one.
+    ///
+    /// The draw path drains this before it does anything else, so a frame's
+    /// first-invalidation stamp can never be one left behind by the frame
+    /// before it.
+    fn take_frame_dirty(&self) -> FrameDirtyAccumulator {
+        mem::take(&mut self.inner.borrow_mut().frame_dirty)
     }
 
     pub fn set_phase(&self, phase: DrawPhase) {
@@ -2283,6 +2326,16 @@ impl Window {
     /// the contents of the new [`Scene`], use [`Self::present`].
     #[profiling::function]
     pub fn draw<'app>(&mut self, cx: &'app mut App) -> ArenaClearNeeded<'app> {
+        // Drain the accumulated invalidations first, so that a timestamp left
+        // by the previous frame cannot be attributed to this one, and take the
+        // start of the frame's span. Both clocks are read unconditionally:
+        // they are two reads of the vDSO clock, far below the noise floor of a
+        // frame, while gating them would put the profiler's switch in the path
+        // of the hottest code GPUI has. What the switch gates is the retention
+        // of the resulting record, not its measurement.
+        let frame_dirty = self.invalidator.take_frame_dirty();
+        let draw_start = Instant::now();
+
         // Set up the per-App arena for element allocation during this draw.
         // This ensures that multiple test Apps have isolated arenas.
         let _arena_scope = ElementArenaScope::enter(&cx.element_arena);
@@ -2419,6 +2472,16 @@ impl Window {
         self.invalidator.set_phase(DrawPhase::None);
         self.needs_present.set(true);
 
+        crate::profiler::record_frame_event(crate::profiler::FrameEvent::Draw(
+            crate::profiler::FrameTiming {
+                window_id: self.handle.window_id(),
+                dirty_at: frame_dirty.dirty_at,
+                invalidations: frame_dirty.invalidations,
+                draw_start,
+                draw_end: Instant::now(),
+            },
+        ));
+
         ArenaClearNeeded::new(&cx.element_arena)
     }
 
@@ -2450,7 +2513,20 @@ impl Window {
         let _present_span =
             crate::enter_span(crate::SpanName::Static("Window::present"), crate::SpanCategory::WindowFrame, None);
 
+        let present_start = Instant::now();
         self.platform_window.draw(&self.rendered_frame.scene);
+        // Recorded after the submission returns, so the timestamp a reader
+        // counts frame rate against is the moment the frame reached the
+        // platform rather than the moment it was handed over. A frame dwelt on
+        // by a blocked compositor is a frame that was late, and this is where
+        // that shows up.
+        crate::profiler::record_frame_event(crate::profiler::FrameEvent::Present(
+            crate::profiler::PresentTiming {
+                window_id: self.handle.window_id(),
+                present_start,
+                present_end: Instant::now(),
+            },
+        ));
         self.needs_present.set(false);
         profiling::finish_frame!();
 

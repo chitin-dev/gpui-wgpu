@@ -230,6 +230,11 @@ impl<T: Future> Future for WithTimeout<T> {
     }
 }
 
+/// Runs `f`, giving up with `Err(())` if it has not finished within `timeout`.
+///
+/// Test-only: it lets a test bound a wait against the real clock rather than
+/// the simulated one. Not exported on wasm, where the timer it races against
+/// is unavailable.
 #[cfg(all(any(test, feature = "test-support"), not(target_family = "wasm")))]
 pub async fn smol_timeout<F, T>(timeout: Duration, f: F) -> Result<T, ()>
 where

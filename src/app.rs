@@ -30,6 +30,8 @@ pub use entity_map::*;
 use http_client::{HttpClient, Url};
 use smallvec::SmallVec;
 #[cfg(any(test, feature = "test-support"))]
+pub use test_app::*;
+#[cfg(any(test, feature = "test-support"))]
 pub use test_context::*;
 use crate::util::ResultExt;
 use crate::debug_panic;
@@ -57,6 +59,8 @@ use crate::{
 mod async_context;
 mod context;
 mod entity_map;
+#[cfg(any(test, feature = "test-support"))]
+mod test_app;
 #[cfg(any(test, feature = "test-support"))]
 mod test_context;
 

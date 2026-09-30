@@ -30,6 +30,11 @@ pub(crate) struct TestWindowState {
     moved_callback: Option<Box<dyn FnMut()>>,
     input_handler: Option<PlatformInputHandler>,
     is_fullscreen: bool,
+    /// The scale factor this window reports, and the one its resize callback is
+    /// handed. Starts at 2.0, the value GPUI's own tests have always been
+    /// written against, so an ordinary test is unchanged; only a test that
+    /// deliberately moves the window between displays sees anything else.
+    scale_factor: f32,
 }
 
 #[derive(Clone)]
@@ -76,6 +81,7 @@ impl TestWindow {
             moved_callback: None,
             input_handler: None,
             is_fullscreen: false,
+            scale_factor: 2.0,
         })))
     }
 
@@ -89,6 +95,24 @@ impl TestWindow {
         drop(lock);
         callback(size, scale_factor);
         self.0.lock().resize_callback = Some(callback);
+    }
+
+    /// Moves the window to a display with a different scale factor and reports
+    /// the resize that follows.
+    ///
+    /// A scale factor change is delivered to the application as a resize, not
+    /// as a notification of its own: the window keeps its size in logical
+    /// pixels while the device pixels behind it change, and everything the
+    /// application has measured in device pixels — glyph rasters, image
+    /// pyramids — has to be redone. This reproduces that pairing, which is why
+    /// the size is re-sent unchanged rather than the new factor alone.
+    pub fn simulate_scale_factor_change(&mut self, scale_factor: f32) {
+        let size = {
+            let mut lock = self.0.lock();
+            lock.scale_factor = scale_factor;
+            lock.bounds.size
+        };
+        self.simulate_resize(size);
     }
 
     pub(crate) fn simulate_active_status_change(&self, active: bool) {
@@ -136,7 +160,7 @@ impl PlatformWindow for TestWindow {
     }
 
     fn scale_factor(&self) -> f32 {
-        2.0
+        self.0.lock().scale_factor
     }
 
     fn appearance(&self) -> WindowAppearance {

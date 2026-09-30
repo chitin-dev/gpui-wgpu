@@ -801,18 +801,45 @@ pub struct TextRun {
 }
 
 /// An identifier for a specific glyph, as returned by [`WindowTextSystem::layout_line`].
+///
+/// The number is the font's own glyph index, so a backend that shapes text
+/// itself has to be able to mint one: the glyphs it reports from
+/// [`PlatformTextSystem::layout_line`] are fed straight back to
+/// [`PlatformTextSystem::advance`] and
+/// [`PlatformTextSystem::glyph_raster_bounds`], and those lookups are keyed by
+/// this value alone.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 #[repr(C)]
-pub struct GlyphId(pub(crate) u32);
+pub struct GlyphId(pub u32);
 
+/// Everything that distinguishes one rasterization of a glyph from another, and
+/// therefore everything that keys the glyph atlas.
+///
+/// A [`PlatformTextSystem`] implementor is handed one of these and is expected
+/// to read it: the point of rasterizing through this type rather than through
+/// bare font and glyph ids is that a glyph rendered at a different size, at a
+/// different subpixel offset, or on a display with a different scale factor is
+/// a *different* bitmap, and the atlas must not conflate them.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct RenderGlyphParams {
-    pub(crate) font_id: FontId,
-    pub(crate) glyph_id: GlyphId,
-    pub(crate) font_size: Pixels,
-    pub(crate) subpixel_variant: Point<u8>,
-    pub(crate) scale_factor: f32,
-    pub(crate) is_emoji: bool,
+pub struct RenderGlyphParams {
+    /// The font the glyph belongs to.
+    pub font_id: FontId,
+    /// Which glyph of that font to draw.
+    pub glyph_id: GlyphId,
+    /// The size to draw it at, in logical pixels.
+    pub font_size: Pixels,
+    /// Where within a device pixel the glyph's origin falls.
+    ///
+    /// Carrying this is what allows glyphs to be positioned at sub-pixel
+    /// precision without the text shimmering as it scrolls: rather than
+    /// rounding the position, the rasterization is offset, so the same letter
+    /// at four different offsets is four atlas entries that tile smoothly.
+    pub subpixel_variant: Point<u8>,
+    /// The display scale factor the raster is destined for.
+    pub scale_factor: f32,
+    /// Whether the glyph came from an emoji font, which decides the color
+    /// treatment it gets when painted.
+    pub is_emoji: bool,
 }
 
 impl Eq for RenderGlyphParams {}
@@ -882,36 +909,42 @@ impl Font {
 
 /// A struct for storing font metrics.
 /// It is used to define the measurements of a typeface.
+///
+/// The numbers are in font units, so they mean nothing until they are scaled by
+/// [`units_per_em`](Self::units_per_em) — which is why the fields are the raw
+/// metrics and the accessor methods are named for what they return. A
+/// [`PlatformTextSystem`] implementor produces these by asking its font
+/// database, so it has to be able to build one.
 #[derive(Clone, Copy, Debug)]
 pub struct FontMetrics {
     /// The number of font units that make up the "em square",
     /// a scalable grid for determining the size of a typeface.
-    pub(crate) units_per_em: u32,
+    pub units_per_em: u32,
 
     /// The vertical distance from the baseline of the font to the top of the glyph covers.
-    pub(crate) ascent: f32,
+    pub ascent: f32,
 
     /// The vertical distance from the baseline of the font to the bottom of the glyph covers.
-    pub(crate) descent: f32,
+    pub descent: f32,
 
     /// The recommended additional space to add between lines of type.
-    pub(crate) line_gap: f32,
+    pub line_gap: f32,
 
     /// The suggested position of the underline.
-    pub(crate) underline_position: f32,
+    pub underline_position: f32,
 
     /// The suggested thickness of the underline.
-    pub(crate) underline_thickness: f32,
+    pub underline_thickness: f32,
 
     /// The height of a capital letter measured from the baseline of the font.
-    pub(crate) cap_height: f32,
+    pub cap_height: f32,
 
     /// The height of a lowercase x.
-    pub(crate) x_height: f32,
+    pub x_height: f32,
 
     /// The outer limits of the area that the font covers.
     /// Corresponds to the xMin / xMax / yMin / yMax values in the OpenType `head` table
-    pub(crate) bounding_box: Bounds<f32>,
+    pub bounding_box: Bounds<f32>,
 }
 
 impl FontMetrics {

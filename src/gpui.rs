@@ -38,6 +38,7 @@ mod keymap;
 mod path_builder;
 mod platform;
 pub mod prelude;
+pub mod profiler;
 mod queue;
 pub mod render_stats;
 mod scene;
@@ -108,6 +109,11 @@ pub use flamegraph::*;
 pub use flamegraph_ui_capture::*;
 #[cfg(feature = "flamegraph")]
 pub use flamegraph_replay::*;
+// Re-exported at the crate root as well as under `profiler`, so a reader can
+// name `gpui::FrameTiming` without knowing which module the frame loop writes
+// it from. The types are the only thing here meant to be held by callers; the
+// functions stay reachable under both paths for symmetry.
+pub use profiler::*;
 pub(crate) use queue::{PriorityQueueReceiver, PriorityQueueSender};
 pub use refineable::*;
 pub use scene::*;

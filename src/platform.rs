@@ -510,20 +510,62 @@ pub trait PlatformDispatcher: Send + Sync {
     }
 }
 
-pub(crate) trait PlatformTextSystem: Send + Sync {
+/// The font and glyph backend a [`TextSystem`] sits on.
+///
+/// GPUI itself only ever reaches a text backend through this trait: the
+/// production platform supplies one backed by the system font stack, and tests
+/// may supply their own so that shaping is deterministic instead of depending
+/// on whichever fonts happen to be installed. [`TestApp`](crate::TestApp) takes
+/// one through [`with_text_system`](crate::TestApp::with_text_system), which is
+/// how a UI test pins advance widths, glyph ids and fallback behaviour to a
+/// known answer.
+///
+/// Implementors own the font database and the rasterization cache; every method
+/// here is a lookup against that state, so implementations must be usable from
+/// several threads at once.
+pub trait PlatformTextSystem: Send + Sync {
+    /// Registers additional font bytes with the backend, making them available
+    /// to subsequent lookups by family name.
     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()>;
+
+    /// The family names the backend can resolve, for font pickers and for
+    /// reporting what is actually installed.
     fn all_font_names(&self) -> Vec<String>;
+
+    /// Resolves a font descriptor to the id used by the rest of this trait.
     fn font_id(&self, descriptor: &Font) -> Result<FontId>;
+
+    /// Line height, ascent and descent for a font, in pixels.
     fn font_metrics(&self, font_id: FontId) -> FontMetrics;
+
+    /// The glyph's ink bounds relative to its origin, in font units scaled to
+    /// pixels. Used for hit-testing and for laying out selections.
     fn typographic_bounds(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Bounds<f32>>;
+
+    /// How far the pen advances after drawing the glyph.
     fn advance(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Size<f32>>;
+
+    /// Substitutes the glyph actually drawn for a character, so that a font
+    /// without that character can hand off to whatever shapes it.
     fn glyph_for_char(&self, font_id: FontId, ch: char) -> Option<GlyphId>;
+
+    /// The device-pixel bounds a glyph will occupy when rasterized with the
+    /// given parameters. Rounding happens here, so this is what the atlas slots
+    /// must be sized from.
     fn glyph_raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>>;
+
+    /// Rasterizes a glyph into a coverage-alpha bitmap of `raster_bounds`.
     fn rasterize_glyph(
         &self,
         params: &RenderGlyphParams,
         raster_bounds: Bounds<DevicePixels>,
     ) -> Result<(Size<DevicePixels>, Vec<u8>)>;
+
+    /// Shapes one line: font runs in, positioned runs and their glyphs out.
+    ///
+    /// This is the seam that decides bidi ordering, fallback substitution,
+    /// kerning and ligature formation, so a test backend that answers it
+    /// directly controls everything a layout measures.
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout;
 
     /// Bytes held by this text system's own rasterized-glyph cache, for

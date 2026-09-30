@@ -664,10 +664,21 @@ impl LineLayoutCache {
 }
 
 /// A run of text with a single font.
+///
+/// A [`PlatformTextSystem`](crate::PlatformTextSystem) is handed these by
+/// [`layout_line`](crate::PlatformTextSystem::layout_line) and cannot shape
+/// anything without the first two: the run says how many bytes of the line it
+/// covers and which font covers them, and the shaper walks the slice
+/// accumulating `len` to know where each run's text starts. The styling fields
+/// after them describe how this fork's line cache decided to break the line up;
+/// they are not inputs a shaper is obliged to act on, so they stay internal.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct FontRun {
-    pub(crate) len: usize,
-    pub(crate) font_id: FontId,
+    /// How many bytes of the line, starting where the previous run ended, this
+    /// run covers.
+    pub len: usize,
+    /// The font those bytes are shaped in.
+    pub font_id: FontId,
     pub(crate) weight: FontWeight,
     pub(crate) style: FontStyle,
     pub(crate) letter_spacing: Option<OrderedFloat<f32>>,

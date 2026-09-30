@@ -48,6 +48,23 @@ impl TestPlatform {
     pub fn new(executor: BackgroundExecutor, foreground_executor: ForegroundExecutor) -> Rc<Self> {
         let text_system = Arc::new(NoopTextSystem);
 
+        Self::with_text_system(executor, foreground_executor, text_system)
+    }
+
+    /// Builds a test platform whose text backend is `text_system` rather than
+    /// the [`NoopTextSystem`] that reports nothing.
+    ///
+    /// A test that only exercises window plumbing is served fine by the noop
+    /// backend — no glyph is ever measured — but a test that asserts on text
+    /// layout needs real shaping, and which fonts are installed on the machine
+    /// running the test is not something an assertion can depend on. Supplying
+    /// the backend here is what lets such a test pin the answer; see
+    /// [`TestApp::with_text_system`](crate::TestApp::with_text_system).
+    pub fn with_text_system(
+        executor: BackgroundExecutor,
+        foreground_executor: ForegroundExecutor,
+        text_system: Arc<dyn PlatformTextSystem>,
+    ) -> Rc<Self> {
         Rc::new_cyclic(|weak| TestPlatform {
             background_executor: executor,
             foreground_executor,
