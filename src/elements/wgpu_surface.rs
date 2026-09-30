@@ -508,7 +508,11 @@ impl Element for WgpuSurface {
         cx: &mut App,
     ) {
         style.paint(bounds, window, cx, |window, _cx| {
-            window.paint_wgpu_surface(bounds, self.handle.id());
+            window.paint_wgpu_surface_with_corner_radii(
+                bounds,
+                style.corner_radii.to_pixels(window.rem_size()),
+                self.handle.id(),
+            );
         });
     }
 }

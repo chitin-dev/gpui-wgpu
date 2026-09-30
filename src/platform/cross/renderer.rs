@@ -304,6 +304,27 @@ impl Bounds {
 struct SurfaceParams {
     bounds: Bounds,
     content_mask: Bounds,
+    clip_bounds: Bounds,
+    corner_radii: [f32; 4],
+}
+
+#[cfg(test)]
+mod rounded_surface_tests {
+    use super::SurfaceParams;
+
+    #[test]
+    fn rounded_surface_shader_validates_and_uniform_layout_matches() -> anyhow::Result<()> {
+        let module = wgpu::naga::front::wgsl::parse_str(include_str!("shaders/surfaces.wgsl"))?;
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::all(),
+        )
+        .validate(&module)?;
+        assert_eq!(std::mem::size_of::<SurfaceParams>(), 64);
+        assert_eq!(std::mem::offset_of!(SurfaceParams, clip_bounds), 32);
+        assert_eq!(std::mem::offset_of!(SurfaceParams, corner_radii), 48);
+        Ok(())
+    }
 }
 
 fn fit_surface_bounds(bounds: Bounds, texture_size: (u32, u32)) -> Bounds {
@@ -1448,6 +1469,7 @@ struct SurfaceBoundsEntry {
     screen_bounds: geometry::Bounds<Pixels>,
     /// Content mask for clipping
     content_mask: geometry::Bounds<Pixels>,
+    corner_radii: [f32; 4],
     /// Layout version when these bounds were computed (for staleness detection)
     layout_version: u64,
 }
@@ -2686,7 +2708,20 @@ impl WgpuRenderer {
                                     .front_view_with_size(*surface_id)
                                 {
                                     let params = SurfaceParams {
-                                        bounds: fit_surface_bounds(Bounds {
+                                        bounds: fit_surface_bounds(
+                                            Bounds {
+                                                origin: [
+                                                    surface.bounds.origin.x.0,
+                                                    surface.bounds.origin.y.0,
+                                                ],
+                                                size: [
+                                                    surface.bounds.size.width.0,
+                                                    surface.bounds.size.height.0,
+                                                ],
+                                            },
+                                            texture_size,
+                                        ),
+                                        clip_bounds: Bounds {
                                             origin: [
                                                 surface.bounds.origin.x.0,
                                                 surface.bounds.origin.y.0,
@@ -2695,7 +2730,13 @@ impl WgpuRenderer {
                                                 surface.bounds.size.width.0,
                                                 surface.bounds.size.height.0,
                                             ],
-                                        }, texture_size),
+                                        },
+                                        corner_radii: [
+                                            surface.corner_radii.top_left.0,
+                                            surface.corner_radii.top_right.0,
+                                            surface.corner_radii.bottom_right.0,
+                                            surface.corner_radii.bottom_left.0,
+                                        ],
                                         content_mask: Bounds {
                                             origin: [
                                                 surface.content_mask.bounds.origin.x.0,
@@ -2713,6 +2754,7 @@ impl WgpuRenderer {
                                     self.surface_bounds_cache.lock().unwrap().insert(
                                         *surface_id,
                                         SurfaceBoundsEntry {
+                                            corner_radii: params.corner_radii,
                                             screen_bounds: geometry::Bounds {
                                                 origin: geometry::Point {
                                                     x: Pixels(surface.bounds.origin.x.0),
@@ -2967,7 +3009,14 @@ impl WgpuRenderer {
 
             cache
                 .iter()
-                .map(|(surface_id, entry)| (*surface_id, entry.screen_bounds, entry.content_mask))
+                .map(|(surface_id, entry)| {
+                    (
+                        *surface_id,
+                        entry.screen_bounds,
+                        entry.content_mask,
+                        entry.corner_radii,
+                    )
+                })
                 .collect::<Vec<_>>()
         };
 
@@ -2976,7 +3025,7 @@ impl WgpuRenderer {
         }
 
         // Keep deterministic ordering.
-        visible_surfaces.sort_unstable_by_key(|(surface_id, _, _)| surface_id.0);
+        visible_surfaces.sort_unstable_by_key(|(surface_id, _, _, _)| surface_id.0);
 
         // Flip ready -> display for surfaces that actually rendered new frames.
         for surface_id in pending_surfaces {
@@ -3067,7 +3116,7 @@ impl WgpuRenderer {
             let mut surface_views = Vec::new();
             let mut surface_param_buffers = Vec::new();
 
-            for (surface_id, screen_bounds, content_mask) in &visible_surfaces {
+            for (surface_id, screen_bounds, content_mask, corner_radii) in &visible_surfaces {
                 let Some((view, texture_size)) = self
                     .context
                     .surface_registry
@@ -3077,10 +3126,18 @@ impl WgpuRenderer {
                 };
 
                 let params = SurfaceParams {
-                    bounds: fit_surface_bounds(Bounds {
+                    clip_bounds: Bounds {
                         origin: [screen_bounds.origin.x.0, screen_bounds.origin.y.0],
                         size: [screen_bounds.size.width.0, screen_bounds.size.height.0],
-                    }, texture_size),
+                    },
+                    corner_radii: *corner_radii,
+                    bounds: fit_surface_bounds(
+                        Bounds {
+                            origin: [screen_bounds.origin.x.0, screen_bounds.origin.y.0],
+                            size: [screen_bounds.size.width.0, screen_bounds.size.height.0],
+                        },
+                        texture_size,
+                    ),
                     content_mask: Bounds {
                         origin: [content_mask.origin.x.0, content_mask.origin.y.0],
                         size: [content_mask.size.width.0, content_mask.size.height.0],

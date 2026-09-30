@@ -3888,17 +3888,32 @@ impl Window {
         bounds: Bounds<Pixels>,
         surface_id: crate::platform::cross::surface_registry::SurfaceId,
     ) {
+        self.paint_wgpu_surface_with_corner_radii(bounds, Corners::default(), surface_id);
+    }
+
+    /// Paint a WGPU surface with rounded coverage in the GPU compositor.
+    /// The radius is in logical pixels; rectangular ancestor masks still apply.
+    pub fn paint_wgpu_surface_with_corner_radii(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        surface_id: crate::platform::cross::surface_registry::SurfaceId,
+    ) {
         use crate::{PaintSurface, scene::SurfaceContent};
 
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
+        let corner_radii = corner_radii
+            .clamp_radii_for_quad_size(bounds.size)
+            .scale(scale_factor);
         let bounds = bounds.scale(scale_factor);
         let content_mask = self.content_mask().scale(scale_factor);
         self.next_frame.scene.insert_primitive(PaintSurface {
             order: 0,
             bounds,
             content_mask,
+            corner_radii,
             content: SurfaceContent::Wgpu(surface_id),
         });
     }

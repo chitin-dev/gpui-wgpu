@@ -12,6 +12,8 @@ struct Bounds {
 struct SurfaceParams {
     bounds: Bounds,
     content_mask: Bounds,
+    clip_bounds: Bounds,
+    corner_radii: vec4<f32>,
 }
 
 struct SurfaceVarying {
@@ -55,7 +57,15 @@ fn vs_surface(@builtin(vertex_index) vertex_id: u32) -> SurfaceVarying {
 fn fs_surface(input: SurfaceVarying) -> @location(0) vec4<f32> {
     let inside = !any(input.clip_distances < vec4<f32>(0.0));
     let color = textureSample(t_surface, s_surface, input.tex_coord);
-    let alpha = color.a;
+    let half_size = params.clip_bounds.size * 0.5;
+    let local = input.position.xy - params.clip_bounds.origin - half_size;
+    let top_radius = select(params.corner_radii.x, params.corner_radii.y, local.x >= 0.0);
+    let bottom_radius = select(params.corner_radii.w, params.corner_radii.z, local.x >= 0.0);
+    let radius = select(top_radius, bottom_radius, local.y >= 0.0);
+    let delta = abs(local) - half_size + vec2<f32>(radius);
+    let distance = min(max(delta.x, delta.y), 0.0) + length(max(delta, vec2<f32>(0.0))) - radius;
+    let coverage = clamp(0.5 - distance, 0.0, 1.0);
+    let alpha = color.a * coverage;
     let multiplier = select(1.0, alpha, globals.premultiplied_alpha != 0u);
     let result = vec4<f32>(color.rgb * multiplier, alpha);
     return select(vec4<f32>(0.0), result, inside);
