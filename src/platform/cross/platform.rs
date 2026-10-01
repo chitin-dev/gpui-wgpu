@@ -1424,6 +1424,7 @@ impl winit::application::ApplicationHandler<CrossEvent> for AppState {
                         repeat,
                         ..
                     },
+                is_synthetic,
                 ..
             } => {
                 let modifiers = self.current_modifiers;
@@ -1442,13 +1443,32 @@ impl winit::application::ApplicationHandler<CrossEvent> for AppState {
                         }
                     };
 
+                    let mut dispatch_result = crate::DispatchEventResult::default();
                     window
                         .0
                         .state
                         .callbacks
                         .invoke_mut(&window.0.state.callbacks.on_input, |cb| {
-                            cb(platform_event.clone());
+                            dispatch_result = cb(platform_event);
                         });
+
+                    // Key bindings get first refusal; IME commits use their separate event path.
+                    if let Some(text) = keyboard_text_input(
+                        state,
+                        is_synthetic,
+                        modifiers,
+                        text.as_deref(),
+                        dispatch_result,
+                    ) {
+                        let input_handler = window.0.state.input_handler.borrow_mut().take();
+                        if let Some(mut input_handler) = input_handler {
+                            input_handler.replace_text_in_range(None, text);
+                            let mut current_handler = window.0.state.input_handler.borrow_mut();
+                            if current_handler.is_none() {
+                                current_handler.replace(input_handler);
+                            }
+                        }
+                    }
                 }
             }
 
@@ -2074,11 +2094,120 @@ fn winit_key_to_keystroke(
     })
 }
 
+fn keyboard_text_input(
+    state: winit::event::ElementState,
+    is_synthetic: bool,
+    modifiers: Modifiers,
+    text: Option<&str>,
+    dispatch_result: crate::DispatchEventResult,
+) -> Option<&str> {
+    if state != winit::event::ElementState::Pressed
+        || is_synthetic
+        || !dispatch_result.propagate
+        || dispatch_result.default_prevented
+        || modifiers.control
+        || modifiers.platform
+        || modifiers.function
+    {
+        return None;
+    }
+
+    text.filter(|text| !text.is_empty() && !text.chars().any(char::is_control))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::winit_key_to_keystroke;
+    use super::{keyboard_text_input, winit_key_to_keystroke};
     use crate::Modifiers;
     use winit::keyboard::{Key, NamedKey};
+
+    #[test]
+    fn inserts_only_unconsumed_printable_keypress_text() {
+        use winit::event::ElementState::{Pressed, Released};
+        let unconsumed = || crate::DispatchEventResult {
+            propagate: true,
+            default_prevented: false,
+        };
+        for text in ["a", "A", " ", "é", "你好", "`x"] {
+            assert_eq!(
+                keyboard_text_input(
+                    Pressed,
+                    false,
+                    Modifiers::default(),
+                    Some(text),
+                    unconsumed()
+                ),
+                Some(text)
+            );
+        }
+        for text in [None, Some(""), Some("\r"), Some("\t"), Some("\u{1b}")] {
+            assert_eq!(
+                keyboard_text_input(Pressed, false, Modifiers::default(), text, unconsumed()),
+                None
+            );
+        }
+        assert_eq!(
+            keyboard_text_input(
+                Released,
+                false,
+                Modifiers::default(),
+                Some("a"),
+                unconsumed()
+            ),
+            None
+        );
+        assert_eq!(
+            keyboard_text_input(Pressed, true, Modifiers::default(), Some("a"), unconsumed()),
+            None
+        );
+        for result in [
+            crate::DispatchEventResult {
+                propagate: false,
+                default_prevented: false,
+            },
+            crate::DispatchEventResult {
+                propagate: true,
+                default_prevented: true,
+            },
+        ] {
+            assert_eq!(
+                keyboard_text_input(Pressed, false, Modifiers::default(), Some("a"), result),
+                None
+            );
+        }
+        for modifiers in [
+            Modifiers {
+                control: true,
+                ..Modifiers::default()
+            },
+            Modifiers {
+                platform: true,
+                ..Modifiers::default()
+            },
+            Modifiers {
+                function: true,
+                ..Modifiers::default()
+            },
+        ] {
+            assert_eq!(
+                keyboard_text_input(Pressed, false, modifiers, Some("a"), unconsumed()),
+                None
+            );
+        }
+        assert_eq!(
+            keyboard_text_input(
+                Pressed,
+                false,
+                Modifiers {
+                    alt: true,
+                    ..Modifiers::default()
+                },
+                Some("é"),
+                unconsumed()
+            ),
+            Some("é")
+        );
+    }
 
     #[test]
     fn translates_space_to_text_input() {
