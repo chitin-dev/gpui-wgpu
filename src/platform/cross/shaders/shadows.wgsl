@@ -170,6 +170,16 @@ fn fs_shadow(input: ShadowVarying) -> @location(0) vec4<f32> {
 
     let corner_radius = pick_corner_radius(center_to_point, shadow.corner_radii);
 
+    // Crisp shadows (including popup rings) have no Gaussian deviation.
+    // Integrating with sigma = 0 produces NaN and corrupts framebuffer alpha.
+    if (shadow.blur_radius <= 0.0) {
+        let radius = clamp(corner_radius, 0.0, min(half_size.x, half_size.y));
+        let delta = abs(center_to_point) - half_size + vec2<f32>(radius);
+        let distance = min(max(delta.x, delta.y), 0.0)
+            + length(max(delta, vec2<f32>(0.0))) - radius;
+        return blend_color(input.color, clamp(0.5 - distance, 0.0, 1.0));
+    }
+
     let low = center_to_point.y - half_size.y;
     let high = center_to_point.y + half_size.y;
     let start = clamp(-3.0 * shadow.blur_radius, low, high);
