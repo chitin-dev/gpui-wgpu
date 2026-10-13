@@ -372,6 +372,68 @@ mod any_view {
 /// A view that renders nothing
 pub struct EmptyView;
 
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    use crate::{AppContext, ParentElement, Styled, TestAppContext, div};
+    use std::{cell::Cell, rc::Rc};
+
+    struct CachedProbe(Rc<Cell<usize>>);
+
+    impl Render for CachedProbe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.0.set(self.0.get() + 1);
+            div().size_full()
+        }
+    }
+
+    struct Root(Entity<CachedProbe>);
+
+    impl Render for Root {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(AnyView::from(self.0.clone()).cached(div().size_full().style().clone()))
+        }
+    }
+
+    #[crate::test]
+    fn compositor_fallback_should_preserve_cached_views(cx: &mut TestAppContext) {
+        let renders = Rc::new(Cell::new(0));
+        let probe = cx.update(|cx| cx.new(|_| CachedProbe(renders.clone())));
+        let window = cx.add_window(|_, _| Root(probe.clone()));
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+            .unwrap();
+        let before = renders.get();
+        assert!(before > 0);
+        let platform_window = cx.test_window(window.into());
+        for _ in 0..10 {
+            platform_window.simulate_redraw();
+        }
+        assert_eq!(
+            renders.get(),
+            before,
+            "compositing must not invalidate UI caches"
+        );
+
+        probe.update(cx, |_, cx| cx.notify());
+        platform_window.simulate_redraw();
+        assert!(
+            renders.get() > before,
+            "view notifications must still invalidate the cache"
+        );
+
+        let before_refresh = renders.get();
+        cx.update_window(window.into(), |_, window, _| window.refresh())
+            .unwrap();
+        platform_window.simulate_redraw();
+        assert!(
+            renders.get() > before_refresh,
+            "explicit refresh must still invalidate the cache"
+        );
+    }
+}
+
 impl Render for EmptyView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         Empty

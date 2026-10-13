@@ -27,6 +27,7 @@ pub(crate) struct TestWindowState {
     active_status_change_callback: Option<Box<dyn FnMut(bool)>>,
     hover_status_change_callback: Option<Box<dyn FnMut(bool)>>,
     resize_callback: Option<Box<dyn FnMut(Size<Pixels>, f32)>>,
+    request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     moved_callback: Option<Box<dyn FnMut()>>,
     input_handler: Option<PlatformInputHandler>,
     is_fullscreen: bool,
@@ -78,11 +79,25 @@ impl TestWindow {
             active_status_change_callback: None,
             hover_status_change_callback: None,
             resize_callback: None,
+            request_frame_callback: None,
             moved_callback: None,
             input_handler: None,
             is_fullscreen: false,
             scale_factor: 2.0,
         })))
+    }
+
+    /// Runs the compositor fallback used by the native redraw event.
+    #[cfg(test)]
+    pub(crate) fn simulate_redraw(&self) {
+        let callback = self.0.lock().request_frame_callback.take();
+        if let Some(mut callback) = callback {
+            callback(RequestFrameOptions {
+                force_render: true,
+                require_presentation: true,
+            });
+            self.0.lock().request_frame_callback = Some(callback);
+        }
     }
 
     pub fn simulate_resize(&mut self, size: Size<Pixels>) {
@@ -260,7 +275,9 @@ impl PlatformWindow for TestWindow {
         self.0.lock().is_fullscreen
     }
 
-    fn on_request_frame(&self, _callback: Box<dyn FnMut(RequestFrameOptions)>) {}
+    fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
+        self.0.lock().request_frame_callback = Some(callback);
+    }
 
     fn on_input(&self, callback: Box<dyn FnMut(crate::PlatformInput) -> DispatchEventResult>) {
         self.0.lock().input_callback = Some(callback)

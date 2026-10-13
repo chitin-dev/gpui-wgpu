@@ -327,7 +327,7 @@ impl Tiling {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
 pub(crate) struct RequestFrameOptions {
     pub(crate) require_presentation: bool,
-    /// Force refresh of all rendering states when true
+    /// Run the compositor even when UI state is unchanged, preserving view caches.
     pub(crate) force_render: bool,
 }
 
