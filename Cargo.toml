@@ -18,7 +18,13 @@ categories = ["gui"]
 autoexamples = false
 
 [features]
-default = ["font-kit"]
+default = ["font-kit", "x11", "wayland"]
+# Consumers can disable defaults and select only their Linux window system.
+x11 = ["winit/x11", "dep:device_query"]
+wayland = ["winit/wayland", "winit/wayland-dlopen", "winit/wayland-csd-adwaita"]
+# Native targets already select their primary backend below; this adds Vulkan
+# for Windows builds that intentionally retain an additional GPU backend.
+vulkan = ["wgpu/vulkan"]
 test-support = [
     "leak-detection",
     "collections/test-support",
@@ -96,7 +102,7 @@ wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 getrandom = { version = "0.4", features = ["wasm_js"] }
-winit = "0.30.12"
+winit = { version = "0.30.12", default-features = false, features = ["rwh_06"] }
 wgpu = { version = "30", default-features = false, features = [
     "web",
     "webgpu",
@@ -114,16 +120,8 @@ wasm-bindgen = "0.2"
 web-time = "1.0"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-device_query = "2.1"
-winit = "0.30.12"
-wgpu = { version = "30", default-features = false, features = [
-    "web",
-    "webgpu",
-    "dx12",
-    "vulkan",
-    "wgsl",
-    "fragile-send-sync-non-atomic-wasm",
-] }
+winit = { version = "0.30.12", default-features = false, features = ["rwh_06"] }
+wgpu = { version = "30", default-features = false, features = ["wgsl"] }
 priority-threadpool = { git = "https://github.com/tristanpoland/priority-threadpool", rev = "bb1ab91" }
 arboard = "3.6.1"
 font-kit = { version = "0.14.3", optional = true }
@@ -144,6 +142,22 @@ smol = "2.0"
 util = { package = "gpui_util", version = "0.2.2" }
 util_macros = { package = "gpui_util_macros", version = "0.2.2" }
 usvg = { version = "0.47.0", default-features = false }
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "android"))'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["vulkan"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Global pointer polling uses Xlib on Linux, so Wayland-only builds omit it.
+device_query = { version = "2.1", optional = true }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+device_query = "2.1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["dx12"] }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["metal"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-video = "0.5.2"
